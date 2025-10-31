@@ -162,5 +162,4 @@ sequenceDiagram
     
     Note over Events: Emitted Events:<br/>1. PositionSubscribed<br/>2. PositionChecked<br/>3. ProtectionExecuted
     
-    Note over ReactiveContract: Reactive Contract:<br/>- Subscribes to callback events<br/>- Subscribes to Ammalgam Liquidate (Topic0)<br/>- Manages cron scheduling<br/>- Sends callbacks based on events<br/>- STATELESS (no storage)
-    ```
+    Note over ReactiveContract: Reactive Contract:<br/>- Subscribes to callback events<br/>- Subscribes to Ammalgam Liquidate (Topic0)<br/>- Manages cron scheduling<br/>- Sends callbacks based on events<br/>- STATELESS (no storage) ```
