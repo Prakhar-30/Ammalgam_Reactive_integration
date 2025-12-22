@@ -212,11 +212,11 @@ Cost = 20 gwei × 1.0 × (212,000 + 21,000)
 
 ### Total Individual User Costs
 
-| Risk Level | Interval | REACT/month | ETH/month | Total (USD estimate) |
-|------------|----------|-------------|-----------|---------------------|
-| High-Risk  | 12 min   | 12.66      | 8.89      | ~$8,900 @ $1,000/ETH |
-| Medium-Risk| 2 hrs    | 1.23       | 0.887     | ~$890 @ $1,000/ETH |
-| Moderate-Risk | 28 hrs | 0.09       | 0.063     | ~$63 @ $1,000/ETH |
+| Risk Level | Interval | REACT/month | ETH/month | 
+|------------|----------|-------------|-----------|
+| High-Risk  | 12 min   | 12.66      | 8.89       | 
+| Medium-Risk| 2 hrs    | 1.23       | 0.887      | 
+| Moderate-Risk | 28 hrs | 0.09       | 0.063     | 
 
 ---
 
@@ -253,121 +253,6 @@ Example: 100 users on 5-minute interval
 
 Per-user cost = Total cost / Number of users
 ```
-
-#### Cost Distribution Models
-
-**Model A: Equal Interval Distribution**
-```
-Assume X users distributed across intervals:
-- 30% on 12-minute interval (high-risk)
-- 50% on 2-hour interval (medium-risk)
-- 20% on 28-hour interval (moderate-risk)
-
-Note: Available intervals are 7s, 1min, 12min, 2hrs, 28hrs
-This distribution assumes typical risk profiles across user base.
-
-For X = 100 users:
-- 12-min group: 30 users, 120 events/day
-  Cost: (120 × 0.0033) + callbacks = 0.396 REACT/day
-  Per user: 0.013 REACT/day = 0.40 REACT/month
-
-- 2-hour group: 50 users, 12 events/day
-  Cost: (12 × 0.0033) + callbacks = 0.040 REACT/day
-  Per user: 0.0008 REACT/day = 0.02 REACT/month
-
-- 28-hour group: 20 users, 0.857 events/day
-  Cost: (0.857 × 0.0033) + callbacks = 0.003 REACT/day
-  Per user: 0.00015 REACT/day = 0.005 REACT/month
-```
-
-**Model B: Batched Processing Efficiency**
-```
-If Reactive Contract processes users in batches:
-- 10 users per cron callback
-- Single event loop processes multiple checkPosition() calls
-
-Efficiency gain: ~40% reduction in per-user costs
-- High-risk (12m): 0.40 × 0.6 = 0.24 REACT/month
-- Medium-risk (2h): 0.02 × 0.6 = 0.012 REACT/month
-- Moderate-risk (28h): 0.005 × 0.6 = 0.003 REACT/month
-```
-
-### Callback Contract Operations (ETH)
-
-#### Shared Contract Benefits
-```
-Gas optimization through:
-1. Warm storage slots (frequently accessed)
-2. Batched state updates
-3. Optimized event emissions
-4. Cached Ammalgam data
-
-Estimated savings: 15-25% per operation
-```
-
-#### Adjusted Gas Costs
-```
-subscribeProtection() (warm):
-- Original: 145,000 gas
-- Optimized: ~120,000 gas
-- With surcharge: 141,000 total
-- Cost: 0.00282 ETH
-
-checkPosition() (warm):
-- Original: 102,000 gas
-- Optimized: ~85,000 gas
-- With surcharge: 106,000 total
-- Cost: 0.00212 ETH
-
-executeProtection() (warm):
-- Original: 212,000 gas
-- Optimized: ~180,000 gas
-- With surcharge: 201,000 total
-- Cost: 0.00402 ETH
-```
-
-#### Per-User Monthly Costs (Platform Model)
-
-**High-Risk User (12-min interval):**
-```
-REACT: 0.24 REACT/month
-ETH: (3,600 × 0.00212) + (6 × 0.00402)
-   = 7.63 + 0.02 = 7.65 ETH/month
-```
-
-**Medium-Risk User (2-hour interval):**
-```
-REACT: 0.012 REACT/month
-ETH: (360 × 0.00212) + (0.12 × 0.00402)
-   = 0.763 + 0.0005 = 0.764 ETH/month
-```
-
-**Moderate-Risk User (28-hour interval):**
-```
-REACT: 0.003 REACT/month
-ETH: (25.71 × 0.00212) + (0.003 × 0.00402)
-   = 0.055 + 0.00001 = 0.055 ETH/month
-```
-
-### Platform-Wide Costs for X Users
-
-**Total Monthly Platform Costs:**
-
-| Users (X) | REACT/month | ETH/month | Total Cost Estimate |
-|-----------|-------------|-----------|-------------------|
-| 100       | ~4         | ~260      | ~$260K @ $1,000/ETH |
-| 500       | ~20        | ~1,300    | ~$1.3M @ $1,000/ETH |
-| 1,000     | ~40        | ~2,600    | ~$2.6M @ $1,000/ETH |
-| 5,000     | ~200       | ~13,000   | ~$13M @ $1,000/ETH |
-
-**Per-User Platform Cost:**
-
-| Risk Level | Interval | REACT/month | ETH/month | Total (USD) |
-|------------|----------|-------------|-----------|------------|
-| High-Risk  | 12 min   | 0.24       | 7.65      | ~$7,650    |
-| Medium-Risk| 2 hrs    | 0.012      | 0.764     | ~$764      |
-| Moderate-Risk | 28 hrs | 0.003      | 0.055     | ~$55       |
-
 ---
 
 
