@@ -10,7 +10,7 @@ This document analyzes operational gas costs for the liquidation protection syst
 
 ## Gas Cost Formulas
 
-### Reactive Contract (Lasna Testnet)
+## Reactive Contract (Lasna Testnet)
 ```
 RVM Transaction Fee = BaseFee × GasUsed
 
@@ -112,7 +112,7 @@ health factor. These are recommended mappings for typical use cases.
         = 0.09 REACT/month
   ```
 
-### Callback Contract Operations (ETH)
+## Callback Contract Operations (ETH)
 
 #### Gas Consumption Estimates
 
