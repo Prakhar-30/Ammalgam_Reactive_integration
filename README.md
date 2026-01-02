@@ -2,7 +2,9 @@
 
 ## Overview
 
-A cross-chain liquidation protection system for Ammalgam Protocol using Reactive Smart Contracts. The system monitors user positions on Sepolia and provides automated protection against liquidation through event-driven callbacks between Sepolia (Callback Contract) and Lasna Testnet (Reactive Contract).
+A cross-chain liquidation protection system for Ammalgam Protocol using Reactive Smart Contracts. The system monitors user positions on Sepolia and provides automated protection against liquidation through **dual monitoring**: event-driven price monitoring and time-based cron scheduling between Sepolia (Callback Contract) and Lasna Testnet (Reactive Contract).
+
+**Key Enhancement:** The system now monitors Ammalgam Swap events in real-time to detect price movements and trigger protection when price volatility thresholds are exceeded, in addition to periodic time-based health checks.
 
 ---
 
@@ -14,19 +16,22 @@ A cross-chain liquidation protection system for Ammalgam Protocol using Reactive
    - Reads Ammalgam state using external functions
    - Calculates health metrics (health factor, LTV)
    - Stores user positions and monitoring settings
-   - Emits events with position data
+   - Emits events with position data and price updates
    - Executes protection actions
 
 2. **Reactive Smart Contract** (Lasna Testnet)
    - **Stateless** - no storage, pure automation
    - Listens to Callback Contract events
+   - **NEW:** Subscribes to Ammalgam `Swap` event for real-time price monitoring
    - Subscribes to Ammalgam `Liquidate` event (Topic0)
    - Manages cron scheduling per user
+   - Tracks price movements and volatility
    - Sends callbacks to trigger protection
 
 3. **Ammalgam Protocol** (Sepolia - Existing)
    - No modifications required
    - Provides data through external functions
+   - Emits `Swap` event on every swap transaction
    - Emits `Liquidate` event for liquidations
 
 ---
@@ -51,9 +56,11 @@ User → Deploy Reactive Contract (Lasna Testnet)
 
 Constructor Parameters:
 - callbackContractAddress: Address of Callback Contract (Sepolia)
+- ammalgamPairAddress: Address of Ammalgam Pair (Sepolia)
 
 Automatic Subscriptions:
 ✓ Subscribe to ALL events from Callback Contract
+✓ Subscribe to Ammalgam's Swap event (NEW - for price monitoring)
 ✓ Subscribe to Ammalgam's Liquidate event (Topic0)
 ```
 
@@ -61,10 +68,11 @@ Automatic Subscriptions:
 
 ### Phase 2: User Subscribes to Protection
 
-**User calls `subscribeProtection(cronInterval)` on Callback Contract**
+**User calls `subscribeProtection(cronInterval, priceMovementThreshold)` on Callback Contract**
 
 **Parameters:**
 - `cronInterval`: Time between checks (12 seconds to 28 hours)
+- `priceMovementThreshold`: Price movement % to trigger check (e.g., 200 = 2%)
 
 **Process:**
 
@@ -90,7 +98,7 @@ Automatic Subscriptions:
    }
    ```
 
-3. **Calculate current tick from reserves:**
+3. **Calculate current tick and price from reserves:**
    ```solidity
    uint256 priceInQ128 = (reserveX * Q128) / reserveY;
    int16 currentTick = TickMath.getTickAtPrice(priceInQ128);
@@ -139,7 +147,9 @@ Automatic Subscriptions:
    positions[user] = Position({
        isActive: true,
        cronInterval: cronInterval,
+       priceMovementThreshold: priceMovementThreshold,  // NEW
        lastHealthFactor: healthFactor,
+       lastPrice: priceInQ128,  // NEW - baseline price
        thresholdHealthFactor: 1.2e18, // Default threshold (1.2x)
        lastCheckTimestamp: block.timestamp
    });
@@ -150,6 +160,8 @@ Automatic Subscriptions:
    event PositionSubscribed(
        address indexed user,
        uint256 cronInterval,           // User's chosen interval
+       uint256 priceMovementThreshold,  // NEW - Price % threshold (200 = 2%)
+       uint256 currentPrice,            // NEW - Current price in Q128
        uint256 healthFactor,            // Current health factor (e.g., 1.5e18 = 1.5)
        uint256 currentLTV,              // Current LTV in bips (e.g., 6000 = 60%)
        uint256 thresholdHealthFactor,   // Threshold to trigger protection (e.g., 1.2e18)
@@ -161,8 +173,9 @@ Automatic Subscriptions:
 
 9. **Reactive Contract receives event:**
    ```
-   - Decodes: user, cronInterval, healthFactor, thresholdHealthFactor
+   - Decodes: user, cronInterval, priceMovementThreshold, currentPrice, healthFactor, thresholdHealthFactor
    - Subscribes user to cron schedule: cronSchedule[cronInterval].push(user)
+   - Stores baseline price: userBaselinePrice[user] = currentPrice  // NEW
    - Checks: if (healthFactor < thresholdHealthFactor)
    ```
 
@@ -171,12 +184,108 @@ Automatic Subscriptions:
     If healthFactor < threshold:
         → Send callback: executeProtection(user)
     Else:
-        → User subscribed to cron, wait for next interval
+        → User subscribed to dual monitoring:
+           1. Cron-based: wait for next interval
+           2. Price-based: monitor Swap events
     ```
 
 ---
 
-### Phase 3: Continuous Cron Monitoring
+### Phase 3A: Real-Time Price Monitoring (NEW)
+
+**Reactive Contract monitors Ammalgam Swap events continuously**
+
+**Swap Event Structure:**
+```solidity
+event Swap(
+    address indexed sender,      // Address initiating the swap
+    uint256 amountXIn,          // Amount of token X provided
+    uint256 amountYIn,          // Amount of token Y provided
+    uint256 amountXOut,         // Amount of token X received
+    uint256 amountYOut,         // Amount of token Y received
+    address indexed to          // Recipient address
+);
+```
+
+**Flow:**
+
+1. **Ammalgam emits Swap event:**
+   ```
+   Any swap on Ammalgam → Swap event emitted
+   ```
+
+2. **Reactive Contract detects Swap event:**
+   ```
+   Reactive Contract receives Swap event
+   → Event is triggered on EVERY swap transaction
+   ```
+
+3. **Reactive Contract sends callback for price update:**
+   ```
+   Reactive Contract → Callback Contract: updatePrice()
+   
+   Purpose: Read current pool state and calculate new price
+   ```
+
+4. **Callback Contract reads current pool state:**
+   ```solidity
+   // Get current reserves to calculate price
+   (reserveX, reserveY, timestamp) = ammalgamPair.getReserves();
+   
+   // Calculate current price
+   currentPriceInQ128 = (reserveX * Q128) / reserveY;
+   ```
+
+5. **Callback Contract emits PriceUpdated event:**
+   ```solidity
+   event PriceUpdated(
+       uint256 currentPrice,       // Current price in Q128
+       uint256 reserveX,           // Current reserve X
+       uint256 reserveY,           // Current reserve Y
+       uint256 timestamp
+   );
+   ```
+
+6. **Reactive Contract receives PriceUpdated event:**
+   ```
+   - Decodes: currentPrice, reserveX, reserveY
+   - For each monitored user:
+       - Compare to baseline: userBaselinePrice[user]
+       - Calculate price movement %
+   ```
+
+7. **Reactive Contract checks price movement threshold:**
+   ```javascript
+   For each user with active protection:
+   
+   priceMovement = abs(currentPrice - baselinePrice) * 10000 / baselinePrice;
+   
+   if (priceMovement >= user.priceMovementThreshold) {
+       → Price threshold exceeded!
+       → Send callback: checkPosition(user)
+   }
+   ```
+
+8. **Position check triggered by price movement:**
+   ```
+   If price movement threshold exceeded:
+       Reactive Contract → Callback Contract: checkPosition(user)
+       
+       → Follows same flow as Phase 3B (Cron Monitoring)
+       → Calculates health factor with new price
+       → Triggers protection if needed
+       → Updates baseline price after check
+   ```
+
+**Benefits of Price Monitoring:**
+- ⚡ **Immediate response** to price shocks
+- 🎯 **Risk-based triggering** - only checks when prices move significantly
+- 💰 **Cost efficient** - avoids unnecessary checks during stable periods
+- 🔒 **Better protection** - catches liquidation risks between cron intervals
+
+---
+
+### Phase 3B: Continuous Cron Monitoring (Time-Based)
 
 **Every cron interval (user-specific), Reactive Contract triggers:**
 
@@ -197,7 +306,7 @@ Automatic Subscriptions:
    - totalAssets()
    - balanceOf(user) for each token
    - Convert shares to assets
-   - Calculate current tick
+   - Calculate current tick and price
    - getTickRange()
    - Build InputParams
    - Calculate health metrics
@@ -207,6 +316,7 @@ Automatic Subscriptions:
    ```solidity
    event PositionChecked(
        address indexed user,
+       uint256 currentPrice,            // NEW - Current price
        uint256 healthFactor,
        uint256 currentLTV,
        uint256 thresholdHealthFactor,
@@ -218,7 +328,8 @@ Automatic Subscriptions:
 
 5. **Reactive Contract receives event:**
    ```
-   - Decodes: user, healthFactor, thresholdHealthFactor
+   - Decodes: user, currentPrice, healthFactor, thresholdHealthFactor
+   - Updates baseline price: userBaselinePrice[user] = currentPrice  // NEW
    - Checks: if (healthFactor < thresholdHealthFactor)
    ```
 
@@ -263,12 +374,15 @@ Automatic Subscriptions:
    ```
    - Stateless processing: logs success
    - Continues monitoring on next cron interval
+   - Continues monitoring Swap events for price changes
    ```
 
    **If healthFactor >= threshold:**
    ```
    - Position is healthy
-   - Continue monitoring on next cron interval
+   - Continue dual monitoring:
+     1. Next cron interval
+     2. Swap event monitoring
    ```
 
 ---
@@ -330,8 +444,14 @@ Automatic Subscriptions:
 ### Callback Contract Functions
 
 ```solidity
-// User subscribes to liquidation protection
-function subscribeProtection(uint256 cronInterval) external;
+// User subscribes to liquidation protection with dual monitoring
+function subscribeProtection(
+    uint256 cronInterval,
+    uint256 priceMovementThreshold  // NEW - in basis points (200 = 2%)
+) external;
+
+// Update current price from pool state (called on Swap events)
+function updatePrice() external;  // NEW
 
 // Check position health (called by Reactive Contract)
 function checkPosition(address user) external;
@@ -352,6 +472,9 @@ function cronCallback(uint256 interval) external;
 // Event listener for Callback Contract events
 function onCallbackEvent(bytes memory eventData) external;
 
+// NEW: Event listener for Ammalgam Swap events
+function onAmmalgamSwap(bytes memory eventData) external;
+
 // Event listener for Ammalgam Liquidate event
 function onAmmalgamLiquidate(bytes memory eventData) external;
 ```
@@ -360,11 +483,13 @@ function onAmmalgamLiquidate(bytes memory eventData) external;
 
 ## Event Specifications
 
-### PositionSubscribed
+### PositionSubscribed (Enhanced)
 ```solidity
 event PositionSubscribed(
     address indexed user,
     uint256 cronInterval,           // 12 sec to 28 hours
+    uint256 priceMovementThreshold,  // NEW - In basis points (200 = 2%)
+    uint256 currentPrice,            // NEW - Baseline price in Q128
     uint256 healthFactor,            // Scaled by 1e18 (e.g., 1.5e18 = 1.5x)
     uint256 currentLTV,              // In basis points (e.g., 6000 = 60%)
     uint256 thresholdHealthFactor,   // Protection threshold (e.g., 1.2e18 = 1.2x)
@@ -374,10 +499,21 @@ event PositionSubscribed(
 );
 ```
 
-### PositionChecked
+### PriceUpdated (NEW)
+```solidity
+event PriceUpdated(
+    uint256 currentPrice,       // Current price in Q128 format
+    uint256 reserveX,           // Current reserve X
+    uint256 reserveY,           // Current reserve Y
+    uint256 timestamp
+);
+```
+
+### PositionChecked (Enhanced)
 ```solidity
 event PositionChecked(
     address indexed user,
+    uint256 currentPrice,            // NEW - Current price
     uint256 healthFactor,
     uint256 currentLTV,
     uint256 thresholdHealthFactor,
@@ -399,6 +535,24 @@ event ProtectionExecuted(
     uint256 timestamp
 );
 ```
+
+---
+
+## Dual Monitoring Strategy
+
+### Why Dual Monitoring?
+
+**Time-Based (Cron):**
+- ✅ Guaranteed periodic checks
+- ✅ Catches gradual degradation
+- ✅ Predictable cost structure
+- ❌ May miss rapid price movements
+
+**Price-Based (Swap Events):**
+- ✅ Immediate response to price shocks
+- ✅ Risk-based triggering
+- ✅ Cost efficient during stability
+
 
 ---
 
@@ -425,30 +579,14 @@ Expressed in basis points:
 - LTV > 9000 (90%) is liquidatable
 ```
 
-### Converting Assets to L (Liquidity Assets)
-
-**X to L conversion:**
+### Price Calculation
 ```solidity
-function convertXToL(
-    uint256 amountX,
-    uint256 sqrtPriceInQ72,
-    uint256 activeLiquidityScalerInQ72
-) internal pure returns (uint256 amountL) {
-    // amountL = (amountX * Q72 * Q72) / (2 * sqrtPrice * scaler)
-    return (amountX * Q72 * Q72) / (2 * sqrtPriceInQ72 * activeLiquidityScalerInQ72);
-}
-```
+// Price in Q128 format (fixed-point)
+price = (reserveX * Q128) / reserveY
 
-**Y to L conversion:**
-```solidity
-function convertYToL(
-    uint256 amountY,
-    uint256 sqrtPriceInQ72,
-    uint256 activeLiquidityScalerInQ72
-) internal pure returns (uint256 amountL) {
-    // amountL = (amountY * 2 * sqrtPrice) / scaler
-    return (amountY * 2 * sqrtPriceInQ72) / activeLiquidityScalerInQ72;
-}
+// Price movement calculation
+priceMovement = abs(currentPrice - baselinePrice) * 10000 / baselinePrice
+// Result in basis points (200 = 2%)
 ```
 
 ---
@@ -465,6 +603,7 @@ All data is obtained using Ammalgam's existing external functions:
 
 2. **`getReserves()`**
    - Returns: `(uint112 reserveX, uint112 reserveY, uint32 lastTimestamp)`
+   - **NEW:** Used to calculate price after Swap events
 
 3. **`getTickRange()`**
    - Returns: `(int16 minTick, int16 maxTick)`
@@ -478,9 +617,32 @@ All data is obtained using Ammalgam's existing external functions:
    - Called on each of 6 token contracts
    - Returns total shares for conversion to assets
 
+### Events Monitored
+
+1. **`Swap` Event (NEW)**
+   ```solidity
+   event Swap(
+       address indexed sender,
+       uint256 amountXIn,
+       uint256 amountYIn,
+       uint256 amountXOut,
+       uint256 amountYOut,
+       address indexed to
+   );
+   ```
+   - **Purpose:** Detect price movements in real-time
+   - **Frequency:** Emitted on every swap transaction
+   - **Action:** Trigger price update and threshold check
+
+2. **`Liquidate` Event**
+   - **Purpose:** Detect when users get liquidated
+   - **Frequency:** Emitted on liquidation events
+   - **Action:** Check if monitored user, attempt recovery
+
 ### No Modifications to Ammalgam
 
 - ✅ Uses only external/public functions
+- ✅ Uses only existing events (Swap, Liquidate)
 - ✅ No new functions added (respects code size limits)
 - ✅ Replicates internal logic externally
 - ✅ Compatible with existing Ammalgam contracts
@@ -496,6 +658,8 @@ Stores all position data:
 struct Position {
     bool isActive;
     uint256 cronInterval;           // User's chosen check interval
+    uint256 priceMovementThreshold;  // NEW - Price % threshold (in bips)
+    uint256 lastPrice;               // NEW - Last known price (Q128)
     uint256 lastHealthFactor;
     uint256 thresholdHealthFactor;  // Trigger threshold (e.g., 1.2e18)
     uint256 lastCheckTimestamp;
@@ -511,6 +675,7 @@ mapping(address => Position) public positions;
 - ❌ **NO position data**
 - ✅ Pure event processing
 - ✅ Cron scheduling (transient)
+- ✅ Price tracking (transient, in-memory during event processing)
 - ✅ Callback triggering
 
 **Benefits:**
@@ -525,7 +690,7 @@ mapping(address => Position) public positions;
 
 ### Default Protection: Partial Debt Repayment
 
-**When triggered (healthFactor < threshold):**
+**When triggered (healthFactor < threshold OR priceMovement > threshold):**
 
 1. **Calculate target repayment:**
    ```solidity
@@ -563,31 +728,50 @@ mapping(address => Position) public positions;
 
 ---
 
-## Cron Interval Guidelines
+## Monitoring Guidelines
+
+### Recommended Configurations
 
 ```
-cronInterval Options (12 seconds to 28 hours):
+Position Risk Level → Configuration
 
-High Risk (HF 1.0-1.2):     Every 12-60 seconds
-Medium Risk (HF 1.2-1.5):   Every 5-15 minutes
-Low Risk (HF > 1.5):        Every 1-6 hours
-Very Safe (HF > 2.0):       Every 12-28 hours
+CRITICAL (HF 1.0-1.15):
+├─ Cron: Every 12 seconds
+├─ Price Threshold: 50 bips (0.5%)
+└─ Max Protection: Fastest response, highest cost
+
+HIGH RISK (HF 1.15-1.3):
+├─ Cron: Every 1 minute
+├─ Price Threshold: 100 bips (1%)
+└─ Strong Protection: Fast response, high cost
+
+MEDIUM RISK (HF 1.3-1.5):
+├─ Cron: Every 12 minutes
+├─ Price Threshold: 200 bips (2%)
+└─ Balanced: Good protection, moderate cost
+
+LOW RISK (HF 1.5-2.0):
+├─ Cron: Every 2 hours
+├─ Price Threshold: 300 bips (3%)
+└─ Cost Efficient: Basic protection, low cost
+
+VERY SAFE (HF > 2.0):
+├─ Cron: Every 28 hours
+├─ Price Threshold: 500 bips (5%)
+└─ Minimum Cost: Emergency protection only
 ```
-
-**Trade-offs:**
-- ⚡ Shorter intervals = faster protection, higher costs
-- 💰 Longer intervals = lower costs, higher risk
-- Users choose based on risk tolerance and position size
 
 ---
 
+## Security Features
 
 ### Price Manipulation Prevention
 
 - ✅ Uses Ammalgam's built-in TWAP (Time-Weighted Average Price)
 - ✅ `getTickRange()` includes historical price data
-- ✅ Never relies on spot price alone
+- ✅ Never relies on spot price alone for protection decisions
 - ✅ Min/max tick bounds prevent manipulation
+- ✅ Dual monitoring prevents gaming single trigger mechanism
 
 ### Pre-Authorization Required
 
@@ -599,10 +783,51 @@ Users must:
 Protection fails gracefully if insufficient funds
 ```
 
----
+### Swap Event Monitoring Safety
+
+```
+✅ Monitors ALL swaps, not just user transactions
+✅ Price updates are atomic with reserve reads
+✅ Threshold checks prevent false triggers from minor fluctuations
+✅ Baseline price updates after successful checks
+```
 
 ---
 
-**Version:** 1.0  
-**Last Updated:** October 31, 2025  
-**Status:** Proof of Concept Design
+## Flow Summary
+
+### Complete Protection Flow
+
+```
+User Subscribes
+    ↓
+[Dual Monitoring Active]
+    ├─→ Time-Based (Cron)
+    │   └─→ Every X interval → checkPosition()
+    │
+    └─→ Price-Based (Swap Events)
+        └─→ On every Swap → updatePrice()
+            └─→ If movement > threshold → checkPosition()
+    
+checkPosition()
+    ↓
+Health Factor < Threshold?
+    ├─→ YES: executeProtection()
+    │   └─→ Repay debt
+    │       └─→ Update baseline price
+    │
+    └─→ NO: Continue monitoring
+        └─→ Update baseline price
+
+Liquidate Event Detected
+    ↓
+checkPosition() → Verify state
+    ↓
+Attempt recovery if needed
+```
+
+---
+
+**Version:** 2.0 (Enhanced with Price Monitoring)  
+**Last Updated:** January 2, 2026  
+**Status:** Enhanced Design with Dual Monitoring
