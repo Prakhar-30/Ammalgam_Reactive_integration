@@ -12,15 +12,14 @@ A cross-chain liquidation protection system for Ammalgam Protocol using Reactive
 
 ### Components
 
-1. **Callback Contract** (Sepolia - Same chain as Ammalgam)
+1. **Callback Contract** (Same chain as Ammalgam)
    - Reads Ammalgam state using external functions
    - Calculates health metrics (health factor, LTV)
    - Stores user positions and monitoring settings
    - Emits events with position data and price updates
    - Executes protection actions
 
-2. **Reactive Smart Contract** (Lasna Testnet)
-   - **Stateless** - no storage, pure automation
+2. **Reactive Smart Contract** 
    - Listens to Callback Contract events
    - **NEW:** Subscribes to Ammalgam `Swap` event for real-time price monitoring
    - Subscribes to Ammalgam `Liquidate` event (Topic0)
@@ -28,7 +27,7 @@ A cross-chain liquidation protection system for Ammalgam Protocol using Reactive
    - Tracks price movements and volatility
    - Sends callbacks to trigger protection
 
-3. **Ammalgam Protocol** (Sepolia - Existing)
+3. **Ammalgam Protocol** 
    - No modifications required
    - Provides data through external functions
    - Emits `Swap` event on every swap transaction
@@ -59,9 +58,9 @@ Constructor Parameters:
 - ammalgamPairAddress: Address of Ammalgam Pair (Sepolia)
 
 Automatic Subscriptions:
-✓ Subscribe to ALL events from Callback Contract
-✓ Subscribe to Ammalgam's Swap event (NEW - for price monitoring)
-✓ Subscribe to Ammalgam's Liquidate event (Topic0)
+✓ Subscribe to ALL required events from Callback Contract
+✓ Subscribe to Ammalgam's Swap event
+✓ Subscribe to Ammalgam's Liquidate event
 ```
 
 ---
@@ -71,7 +70,7 @@ Automatic Subscriptions:
 **User calls `subscribeProtection(cronInterval, priceMovementThreshold)` on Callback Contract**
 
 **Parameters:**
-- `cronInterval`: Time between checks (12 seconds to 28 hours)
+- `cronInterval`: Time between checks (12 minutes,2hrs or 28 hours)
 - `priceMovementThreshold`: Price movement % to trigger check (e.g., 200 = 2%)
 
 **Process:**
@@ -211,7 +210,7 @@ event Swap(
 
 1. **Ammalgam emits Swap event:**
    ```
-   Any swap on Ammalgam → Swap event emitted
+   Any swap on specific Ammalgam Pair→ Swap event emitted
    ```
 
 2. **Reactive Contract detects Swap event:**
@@ -224,22 +223,18 @@ event Swap(
    ```
    Reactive Contract → Callback Contract: updatePrice()
    
-   Purpose: Read current pool state and calculate new price
+   Purpose: Read current pool state
    ```
 
 4. **Callback Contract reads current pool state:**
    ```solidity
    // Get current reserves to calculate price
    (reserveX, reserveY, timestamp) = ammalgamPair.getReserves();
-   
-   // Calculate current price
-   currentPriceInQ128 = (reserveX * Q128) / reserveY;
    ```
 
 5. **Callback Contract emits PriceUpdated event:**
    ```solidity
    event PriceUpdated(
-       uint256 currentPrice,       // Current price in Q128
        uint256 reserveX,           // Current reserve X
        uint256 reserveY,           // Current reserve Y
        uint256 timestamp
@@ -249,6 +244,8 @@ event Swap(
 6. **Reactive Contract receives PriceUpdated event:**
    ```
    - Decodes: currentPrice, reserveX, reserveY
+   - Calculate current price
+       - currentPriceInQ128 = (reserveX * Q128) / reserveY;
    - For each monitored user:
        - Compare to baseline: userBaselinePrice[user]
        - Calculate price movement %
@@ -270,20 +267,9 @@ event Swap(
    ```
    If price movement threshold exceeded:
        Reactive Contract → Callback Contract: checkPosition(user)
-       
-       → Follows same flow as Phase 3B (Cron Monitoring)
-       → Calculates health factor with new price
-       → Triggers protection if needed
+       → Triggers protection
        → Updates baseline price after check
    ```
-
-**Benefits of Price Monitoring:**
-- ⚡ **Immediate response** to price shocks
-- 🎯 **Risk-based triggering** - only checks when prices move significantly
-- 💰 **Cost efficient** - avoids unnecessary checks during stable periods
-- 🔒 **Better protection** - catches liquidation risks between cron intervals
-
----
 
 ### Phase 3B: Continuous Cron Monitoring (Time-Based)
 
@@ -538,24 +524,6 @@ event ProtectionExecuted(
 
 ---
 
-## Dual Monitoring Strategy
-
-### Why Dual Monitoring?
-
-**Time-Based (Cron):**
-- ✅ Guaranteed periodic checks
-- ✅ Catches gradual degradation
-- ✅ Predictable cost structure
-- ❌ May miss rapid price movements
-
-**Price-Based (Swap Events):**
-- ✅ Immediate response to price shocks
-- ✅ Risk-based triggering
-- ✅ Cost efficient during stability
-
-
----
-
 ## Health Factor & LTV Calculations
 
 ### Health Factor Formula
@@ -667,16 +635,6 @@ struct Position {
 
 mapping(address => Position) public positions;
 ```
-
-### Reactive Contract (Lasna) - STATELESS
-
-- ❌ **NO storage variables**
-- ❌ **NO mappings**
-- ❌ **NO position data**
-- ✅ Pure event processing
-- ✅ Cron scheduling (transient)
-- ✅ Price tracking (transient, in-memory during event processing)
-- ✅ Callback triggering
 
 **Benefits:**
 - No dual-state complexity
@@ -829,5 +787,3 @@ Attempt recovery if needed
 ---
 
 **Version:** 2.0 (Enhanced with Price Monitoring)  
-**Last Updated:** January 2, 2026  
-**Status:** Enhanced Design with Dual Monitoring
