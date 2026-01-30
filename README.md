@@ -784,7 +784,3 @@ VERY SAFE (HF > 2.0):
 ├─ Tick Threshold: 25 ticks (1 tranche)
 └─ Minimum Cost: Emergency protection only
 ```
-
-algam Contracts)
-**Date:** January 2026
-**Status:** Ready for Implementation
