@@ -1,165 +1,183 @@
 ```mermaid
 sequenceDiagram
     participant User
-    participant CallbackContract as Callback Contract<br/>(Sepolia)
-    participant AmmalgamPair as Ammalgam Protocol<br/>(Sepolia)
-    participant Events as Event Logs<br/>(Sepolia Chain)
-    participant ReactiveContract as Reactive Smart Contract<br/>(Lasna Testnet)
-    
+    participant CallbackContract as Callback Contract<br/>(Origin Chain - e.g. Sepolia)
+    participant Saturation as Saturation Contract<br/>(Singleton)
+    participant TokenController as Token Controller<br/>(Ammalgam)
+    participant AmmalgamPair as Ammalgam Pair<br/>(Origin Chain)
+    participant Events as Event Logs<br/>(Origin Chain)
+    participant ReactiveContract as Reactive Smart Contract<br/>(Reactive Network)
+
     Note over User,ReactiveContract: PHASE 1: CONTRACT DEPLOYMENT
-    
+
     User->>CallbackContract: 1. Deploy Callback Contract
-    Note over CallbackContract: Constructor params:<br/>- ammalgamPairAddress<br/>- tokenAddresses[6]
-    
-    User->>ReactiveContract: 2. Deploy Reactive Contract<br/>Subscribe to Callback Contract events
-    Note over ReactiveContract: Constructor params:<br/>- callbackContractAddress (Sepolia)<br/>Subscribe to ALL events from Callback<br/>Subscribe to Ammalgam Liquidate event (Topic0)
-    
+    Note over CallbackContract: Constructor params:<br/>- ammalgamPairAddress<br/>- saturationContractAddress (NEW)<br/>- tokenControllerAddress (NEW)
+
+    User->>ReactiveContract: 2. Deploy Reactive Contract
+    Note over ReactiveContract: Constructor params:<br/>- callbackContractAddress (Origin)<br/>- ammalgamPairAddress (Origin)<br/><br/>Subscribe to:<br/>✓ ALL Callback events<br/>✓ Ammalgam Swap event<br/>✓ Ammalgam Liquidate event (NEW format)
+
     Note over User,ReactiveContract: PHASE 2: USER SUBSCRIBES TO PROTECTION
-    
-    User->>CallbackContract: 3. subscribeProtection(cronInterval)
-    Note over User: cronInterval: 12sec to 28hours
-    
-    CallbackContract->>AmmalgamPair: getReserves()
-    AmmalgamPair-->>CallbackContract: (reserveX, reserveY, timestamp)
-    
-    CallbackContract->>AmmalgamPair: totalAssets()
-    AmmalgamPair-->>CallbackContract: [depositL, depositX, depositY,<br/>borrowL, borrowX, borrowY]
-    
-    CallbackContract->>AmmalgamPair: balanceOf(user) for each token[6]
-    AmmalgamPair-->>CallbackContract: [userShares[6]]
-    
-    CallbackContract->>CallbackContract: Convert shares to assets<br/>userAssets[i] = userShares[i] * totalAssets[i] / totalShares[i]
-    
-    CallbackContract->>CallbackContract: Calculate tick from reserves<br/>tick = TickMath.getTickAtPrice(reserveX * Q128 / reserveY)
-    
-    CallbackContract->>AmmalgamPair: getTickRange()
-    AmmalgamPair-->>CallbackContract: (minTick, maxTick)
-    
-    CallbackContract->>CallbackContract: Build InputParams:<br/>- userAssets[6]<br/>- sqrtPriceMin/Max from ticks<br/>- activeLiquidityScaler<br/>- activeLiquidityAssets<br/>- reserves
-    
-    CallbackContract->>CallbackContract: Calculate Health Metrics:<br/>- convertXToL, convertYToL<br/>- netDepositedXinL, netDepositedYinL<br/>- netBorrowedXinL, netBorrowedYinL<br/>- healthFactor = collateral * LTVMAX / debt<br/>- currentLTV = debt / collateral
-    
-    CallbackContract->>CallbackContract: Store Position:<br/>- user address<br/>- cronInterval<br/>- lastHealthFactor<br/>- thresholdHealthFactor (e.g., 1.2e18)
-    
-    CallbackContract->>Events: Emit PositionSubscribed Event
-    Note over Events: PositionSubscribed:<br/>- address indexed user<br/>- uint256 cronInterval<br/>- uint256 healthFactor<br/>- uint256 currentLTV<br/>- uint256 thresholdHealthFactor<br/>- uint256 collateralInL<br/>- uint256 debtInL<br/>- uint256 timestamp
-    
-    Events-->>ReactiveContract: Event Received: PositionSubscribed
-    
-    ReactiveContract->>ReactiveContract: Decode event data<br/>(user, cronInterval, healthFactor, threshold)
-    
-    ReactiveContract->>ReactiveContract: Subscribe user to cron:<br/>cronSchedule[cronInterval].add(user)
-    
-    ReactiveContract->>ReactiveContract: Check threshold:<br/>if (healthFactor < thresholdHealthFactor)
-    
+
+    User->>CallbackContract: 3. subscribeProtection(cronInterval, tickMovementThreshold)
+    Note over CallbackContract: NEW: tickMovementThreshold in TICKS<br/>(not basis points)
+
+    CallbackContract->>TokenController: getReserves() (NEW interface)
+    TokenController-->>CallbackContract: (reserveX, reserveY, timestamp)
+
+    CallbackContract->>TokenController: totalAssetsAndShares(true) (NEW!)
+    Note over TokenController: Single call for assets AND shares<br/>with interest accrued
+    TokenController-->>CallbackContract: (allAssets[6], allShares[6])
+
+    CallbackContract->>TokenController: balanceOf(user) for each token[6]
+    TokenController-->>CallbackContract: userShares[6]
+
+    CallbackContract->>CallbackContract: Convert shares to assets:<br/>userAssets[i] = (userShares[i] * allAssets[i]) / allShares[i]
+
+    CallbackContract->>CallbackContract: Calculate current tick (NEW!):<br/>currentTick = TickMath.getTickFromReserves(reserveX, reserveY)
+
+    CallbackContract->>Saturation: getTickRange(pair, reserveX, reserveY, true) (NEW!)
+    Note over Saturation: Singleton for all pairs<br/>Uses TWAP with long-term tick
+    Saturation-->>CallbackContract: (minTick, maxTick)
+
+    CallbackContract->>CallbackContract: Build InputParams (UPDATED!):<br/>- Remove activeLiquidityScalerInQ72<br/>- Use sqrtPrice from ticks<br/>- activeLiquidity = allAssets[0] - allAssets[3]
+
+    CallbackContract->>CallbackContract: Calculate health metrics:<br/>- Use Validation.getCheckLtvParams()<br/>- Use Validation.calcDebtAndCollateral()<br/>- healthFactor = (collateral * 9000) / debt
+
+    CallbackContract->>CallbackContract: Store Position (UPDATED!):<br/>- tickMovementThreshold (in ticks)<br/>- lastTick (baseline tick)<br/>- lastHealthFactor<br/>- thresholdHealthFactor
+
+    CallbackContract->>Events: Emit PositionSubscribed (UPDATED)
+    Note over Events: PositionSubscribed:<br/>- tickMovementThreshold (NEW)<br/>- currentTick (NEW)<br/>- healthFactor<br/>- currentLTV<br/>- thresholdHealthFactor<br/>- collateralInL<br/>- debtInL
+
+    Events-->>ReactiveContract: PositionSubscribed received
+
+    ReactiveContract->>ReactiveContract: Decode event<br/>Store baseline TICK (NEW)<br/>Register cron schedule
+
     alt Health Factor Below Threshold
-        ReactiveContract->>CallbackContract: Immediate Callback: executeProtection(user)
-        Note over ReactiveContract: Protection needed immediately
+        ReactiveContract->>CallbackContract: executeProtection(user)
     else Health Factor Above Threshold
-        Note over ReactiveContract: User subscribed to cron<br/>Wait for next cron event
+        Note over ReactiveContract: Dual monitoring active
     end
-    
-    Note over User,ReactiveContract: PHASE 3: CONTINUOUS CRON MONITORING
-    
-    loop Every Cron Interval (user-specific)
-        Note over ReactiveContract: Cron Event Triggered<br/>for cronInterval X
-        
-        ReactiveContract->>ReactiveContract: Get users for this interval:<br/>users = cronSchedule[cronInterval]
-        
-        loop For Each User in Cron Schedule
-            ReactiveContract->>CallbackContract: Callback: checkPosition(user)
-            
-            CallbackContract->>AmmalgamPair: getReserves()
-            AmmalgamPair-->>CallbackContract: (reserveX, reserveY, timestamp)
-            
-            CallbackContract->>AmmalgamPair: totalAssets()
-            AmmalgamPair-->>CallbackContract: [depositL, depositX, depositY,<br/>borrowL, borrowX, borrowY]
-            
-            CallbackContract->>AmmalgamPair: balanceOf(user) for each token[6]
-            AmmalgamPair-->>CallbackContract: [userShares[6]]
-            
-            CallbackContract->>CallbackContract: Convert shares to assets
-            
-            CallbackContract->>CallbackContract: Calculate current tick
-            
-            CallbackContract->>AmmalgamPair: getTickRange()
-            AmmalgamPair-->>CallbackContract: (minTick, maxTick)
-            
-            CallbackContract->>CallbackContract: Build InputParams
-            
-            CallbackContract->>CallbackContract: Calculate Health Metrics:<br/>- healthFactor<br/>- currentLTV<br/>- collateralInL<br/>- debtInL
-            
-            CallbackContract->>Events: Emit PositionChecked Event
-            Note over Events: PositionChecked:<br/>- address indexed user<br/>- uint256 healthFactor<br/>- uint256 currentLTV<br/>- uint256 thresholdHealthFactor<br/>- uint256 collateralInL<br/>- uint256 debtInL<br/>- uint256 timestamp
-            
-            Events-->>ReactiveContract: Event Received: PositionChecked
-            
-            ReactiveContract->>ReactiveContract: Decode event:<br/>(user, healthFactor, threshold)
-            
-            ReactiveContract->>ReactiveContract: Check condition:<br/>if (healthFactor < thresholdHealthFactor)
-            
-            alt Health Factor Below Threshold - PROTECTION NEEDED
-                ReactiveContract->>CallbackContract: Callback: executeProtection(user)
-                
-                CallbackContract->>AmmalgamPair: Read latest state<br/>(getReserves, totalAssets, balanceOf)
-                AmmalgamPair-->>CallbackContract: Current state
-                
-                CallbackContract->>CallbackContract: Recalculate metrics atomically
-                
-                CallbackContract->>CallbackContract: Calculate protection amount:<br/>targetHF = 1.5e18<br/>repayAmount = currentDebt - (collateral * LTVMAX / targetHF)
-                
-                CallbackContract->>AmmalgamPair: Execute protection<br/>(e.g., repay debt on behalf of user)
-                Note over CallbackContract: User must have pre-approved<br/>tokens or provided funds
-                
-                AmmalgamPair->>AmmalgamPair: Process repayment<br/>validateOnUpdate(user, user, true)<br/>Update saturation
-                AmmalgamPair-->>CallbackContract: Success
-                
-                CallbackContract->>CallbackContract: Update stored position data
-                
-                CallbackContract->>Events: Emit ProtectionExecuted Event
-                Note over Events: ProtectionExecuted:<br/>- address indexed user<br/>- uint256 repaidAmount<br/>- uint256 repaidAssetType (L/X/Y)<br/>- uint256 oldHealthFactor<br/>- uint256 newHealthFactor<br/>- uint256 gasUsed<br/>- uint256 timestamp
-                
-                Events-->>ReactiveContract: Event Received: ProtectionExecuted
-                Note over ReactiveContract: Stateless processing<br/>Log success, continue monitoring
-                
-            else Health Factor Above Threshold - HEALTHY
-                Note over ReactiveContract: Position healthy<br/>Continue monitoring
-            end
+
+    Note over User,ReactiveContract: PHASE 3A: REAL-TIME TICK MONITORING (UPDATED!)
+
+    loop On every Ammalgam Swap
+        AmmalgamPair->>Events: Emit Swap
+        Events-->>ReactiveContract: Swap event received
+
+        ReactiveContract->>CallbackContract: Callback: emitTickDetails()
+
+        CallbackContract->>TokenController: getReserves()
+        TokenController-->>CallbackContract: (reserveX, reserveY, timestamp)
+
+        CallbackContract->>CallbackContract: Calculate tick (NEW!):<br/>currentTick = TickMath.getTickFromReserves(reserveX, reserveY)
+
+        CallbackContract->>Events: Emit TickUpdated (NEW!)
+        Note over Events: TickUpdated:<br/>- currentTick (int16)<br/>- reserveX<br/>- reserveY<br/>- timestamp
+
+        Events-->>ReactiveContract: TickUpdated received
+
+        ReactiveContract->>ReactiveContract: Compute tick movement (NEW!):<br/>tickMovement = abs(currentTick - baselineTick)<br/>Compare with tickMovementThreshold
+
+        alt Tick Movement Exceeds Threshold
+            ReactiveContract->>ReactiveContract: Emit ExecuteProtection(user)
+        else Tick Stable
+            Note over ReactiveContract: No action required
         end
     end
+
+    Note over User,ReactiveContract: PHASE 3A.1: EXECUTION AFTER TICK TRIGGER
+
+    ReactiveContract->>ReactiveContract: Listen ExecuteProtection event
+    ReactiveContract->>CallbackContract: checkPosition(user)
+
+    CallbackContract->>TokenController: getReserves()
+    TokenController-->>CallbackContract: (reserveX, reserveY, timestamp)
+
+    CallbackContract->>TokenController: totalAssetsAndShares(true)
+    TokenController-->>CallbackContract: (allAssets[6], allShares[6])
+
+    CallbackContract->>TokenController: balanceOf(user) for tokens
+    TokenController-->>CallbackContract: userShares[6]
+
+    CallbackContract->>CallbackContract: Calculate tick:<br/>currentTick = TickMath.getTickFromReserves(reserveX, reserveY)
+
+    CallbackContract->>Saturation: getTickRange(pair, reserveX, reserveY, true)
+    Saturation-->>CallbackContract: (minTick, maxTick)
+
+    CallbackContract->>CallbackContract: Build InputParams & calculate health
+
+    alt Health Factor Below Threshold
+        CallbackContract->>CallbackContract: Use Validation.validateIsLiquidatable()
+        
+        alt Is Liquidatable
+            CallbackContract->>AmmalgamPair: repay(user)
+            Note over AmmalgamPair: Internally calls validateOnUpdate()<br/>Updates saturation automatically
+            AmmalgamPair-->>CallbackContract: (repayX, repayY)
+
+            CallbackContract->>Events: Emit ProtectionExecuted (UPDATED)
+            Note over Events: ProtectionExecuted:<br/>- repaidXAssets (NEW)<br/>- repaidYAssets (NEW)<br/>- oldHealthFactor<br/>- newHealthFactor
+            Events-->>ReactiveContract: ProtectionExecuted received
+        end
+    else Health Factor Above Threshold
+        CallbackContract->>Events: Emit PositionChecked
+    end
+
+    Note over User,ReactiveContract: PHASE 3B: CONTINUOUS CRON MONITORING (TIME-BASED)
+
+    loop Every cronInterval
+        ReactiveContract->>CallbackContract: checkPosition(user)
+
+        CallbackContract->>TokenController: getReserves()
+        CallbackContract->>TokenController: totalAssetsAndShares(true)
+        CallbackContract->>TokenController: balanceOf(user)
+        
+        CallbackContract->>CallbackContract: Calculate tick from reserves
+        CallbackContract->>Saturation: getTickRange(pair, reserves, true)
+
+        CallbackContract->>CallbackContract: Calculate health metrics<br/>using Validation library
+        
+        CallbackContract->>Events: Emit PositionChecked (UPDATED)
+        Note over Events: PositionChecked:<br/>- currentTick (NEW)<br/>- healthFactor<br/>- currentLTV
+
+        Events-->>ReactiveContract: PositionChecked received
+
+        ReactiveContract->>ReactiveContract: Update baseline tick
+
+        alt Health Factor Below Threshold
+            ReactiveContract->>CallbackContract: executeProtection(user)
+        else Health Factor Above Threshold
+            Note over ReactiveContract: Continue monitoring
+        end
+    end
+
+    Note over User,ReactiveContract: PHASE 4: AMMALGAM LIQUIDATE EVENT MONITORING (UPDATED!)
+
+    AmmalgamPair->>Events: Emit Liquidate (NEW format!)
+    Note over Events: Liquidate:<br/>- borrower, to<br/>- seizedLAssets, seizedXAssets, seizedYAssets<br/>- repayXAssets, repayYAssets<br/>- actualRepaidXAssets (NEW)<br/>- actualRepaidYAssets (NEW)<br/>- liquidationType (0=HARD, 1=SATURATION, 2=LEVERAGE)
     
-    Note over User,ReactiveContract: PHASE 4: AMMALGAM LIQUIDATE EVENT MONITORING
+    Events-->>ReactiveContract: Liquidate event detected
+
+    ReactiveContract->>ReactiveContract: Decode new event format<br/>Check liquidationType<br/>Verify if monitored user
+
+    ReactiveContract->>CallbackContract: checkPosition(borrower)
+
+    CallbackContract->>TokenController: Read post-liquidation state
+    CallbackContract->>Saturation: getTickRange for updated position
     
-    AmmalgamPair->>Events: Ammalgam emits: Liquidate Event
-    Note over Events: Liquidate (from Ammalgam):<br/>- address indexed borrower<br/>- address indexed to<br/>- uint256 depositL<br/>- uint256 depositX<br/>- uint256 depositY<br/>- uint256 repayLX<br/>- uint256 repayLY<br/>- uint256 repayX<br/>- uint256 repayY<br/>- uint256 liquidationType
+    CallbackContract->>CallbackContract: Recalculate health with new state
     
-    Events-->>ReactiveContract: Liquidate event detected<br/>(subscribed to Topic0)
-    
-    ReactiveContract->>ReactiveContract: Decode liquidation event<br/>(borrower, liquidationType, amounts)
-    
-    ReactiveContract->>CallbackContract: Callback: checkPosition(borrower)
-    Note over ReactiveContract: Check if borrower is a monitored user<br/>Verify position status post-liquidation
-    
-    CallbackContract->>AmmalgamPair: Read position state
-    AmmalgamPair-->>CallbackContract: Updated position data
-    
-    CallbackContract->>CallbackContract: Calculate post-liquidation health
-    
-    CallbackContract->>Events: Emit PositionChecked Event
-    
-    Events-->>ReactiveContract: Position status after liquidation
-    
-    alt Position Still At Risk
+    CallbackContract->>Events: Emit PositionChecked
+
+    Events-->>ReactiveContract: PositionChecked received
+
+    alt Position Still At Risk (HARD liquidation)
         ReactiveContract->>CallbackContract: executeProtection(borrower)
-        Note over ReactiveContract: Attempt to save remaining position
+        Note over CallbackContract: Attempt partial liquidation<br/>with tranches = 1
     else Position Closed or Healthy
         Note over ReactiveContract: Monitoring continues or ends
     end
-    
-    Note over User,ReactiveContract: SUMMARY - KEY FUNCTION CALLS
-    
-    Note over CallbackContract: Callback Contract Functions:<br/>1. subscribeProtection(cronInterval)<br/>2. checkPosition(user)<br/>3. executeProtection(user)
-    
-    Note over Events: Emitted Events:<br/>1. PositionSubscribed<br/>2. PositionChecked<br/>3. ProtectionExecuted
-    
-    Note over ReactiveContract: Reactive Contract:<br/>- Subscribes to callback events<br/>- Subscribes to Ammalgam Liquidate (Topic0)<br/>- Manages cron scheduling<br/>- Sends callbacks based on events<br/>- STATELESS (no storage) ```
+
+    Note over CallbackContract: CALLBACK CONTRACT (STATEFUL)<br/>✓ Uses totalAssetsAndShares() (NEW)<br/>✓ Tick-based monitoring (NEW)<br/>✓ Integrates with Saturation singleton (NEW)<br/>✓ Removed activeLiquidityScaler (NEW)
+
+    Note over ReactiveContract: REACTIVE CONTRACT (STATELESS)<br/>✓ Monitors tick movements (NEW)<br/>✓ Handles new Liquidate format (NEW)<br/>✓ Triggers protection<br/>✓ All heavy logic off-chain
+```
